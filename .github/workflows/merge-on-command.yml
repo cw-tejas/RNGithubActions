@@ -1,0 +1,129 @@
+name: ':runMerge'
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  merge-on-command:
+    if: github.event.issue.pull_request && github.event.comment.body == ':runMerge'
+    runs-on: ubuntu-latest
+
+    steps:
+      # Fetch the pull request details and validate it's against the main branch
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+
+            // Check if PR is against main branch
+            if (pr.data.base.ref !== 'main') {
+              core.setFailed('This command only works for PRs against the main branch');
+              return;
+            }
+
+            core.setOutput('sha', pr.data.head.sha);
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('base_ref', pr.data.base.ref);            
+            return pr.data;
+
+      # Checkout the specific commit from the PR branch to run tests against
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ steps.pr.outputs.sha }}
+
+      # Setup Node.js environment for running the React Native tests
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # Install project dependencies needed for running tests
+      - name: Install dependencies
+        run: npm ci
+
+      # Execute unit tests from the tests/unit folder with coverage reporting
+      - name: Run unit tests
+        id: tests
+        run: |
+          echo "Running unit tests from tests/unit folder..."
+          npm test -- tests/unit --coverage --passWithNoTests --no-color
+        continue-on-error: true
+
+      # Post test results as a comment on the PR for visibility
+      - name: Comment test results on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testResult = '${{ steps.tests.outcome }}';
+            const sha = '${{ steps.pr.outputs.sha }}';
+
+            let commentBody;
+            if (testResult === 'success') {
+              commentBody = `✅ **Unit Tests Passed!** 
+              
+              All unit tests from \`tests/unit\` folder have passed successfully.
+              The PR will now be merged automatically.
+              
+              Commit: ${sha}`;
+            } else {
+              commentBody = `❌ **Unit Tests Failed!** 
+              
+              Unit tests from \`tests/unit\` folder have failed.
+              Please fix the failing tests before the PR can be merged.
+              
+              Commit: ${sha}`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody            });
+
+      # Automatically merge the PR if all tests passed successfully
+      - name: Merge PR if tests passed
+        if: steps.tests.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                merge_method: 'merge',
+                commit_title: `Merge PR #${context.issue.number}: Auto-merged after successful tests`,
+                commit_message: 'This PR was automatically merged after all unit tests passed via :runMerge command.'
+              });
+              
+              // Comment success
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: '🎉 **PR Successfully Merged!** The pull request has been automatically merged after all tests passed.'
+              });
+            } catch (error) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `❌ **Merge Failed!** Failed to merge the PR: ${error.message}`
+              });            }
+
+      # Fail the workflow explicitly if tests failed to prevent merge
+      - name: Fail workflow if tests failed
+        if: steps.tests.outcome != 'success'
+        run: |
+          echo "Unit tests failed. PR will not be merged."
+          exit 1
