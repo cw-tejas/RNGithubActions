@@ -4,6 +4,14 @@ on:
   issue_comment:
     types: [created]
 
+# Set required permissions for the workflow
+permissions:
+  contents: write # Required to merge PRs
+  pull-requests: write # Required to merge PRs and update PR status
+  issues: write # Required to comment on PRs (PRs are issues in GitHub API)
+  checks: read # Required to read check status
+  statuses: read # Required to read commit statuses
+
 jobs:
   merge-on-command:
     if: github.event.issue.pull_request && github.event.comment.body == ':runMerge'
@@ -82,13 +90,12 @@ jobs:
               Please fix the failing tests before the PR can be merged.
               
               Commit: ${sha}`;
-            }
-
-            await github.rest.issues.createComment({
+            }            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: commentBody            });
+              body: commentBody
+            });
 
       # Automatically merge the PR if all tests passed successfully
       - name: Merge PR if tests passed
@@ -97,6 +104,23 @@ jobs:
         with:
           script: |
             try {
+              // First check if PR is still mergeable
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number
+              });
+              
+              if (!pr.data.mergeable) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: '❌ **PR Not Mergeable!** The PR has conflicts or other issues that prevent merging.'
+                });
+                return;
+              }
+              
               await github.rest.pulls.merge({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -114,12 +138,14 @@ jobs:
                 body: '🎉 **PR Successfully Merged!** The pull request has been automatically merged after all tests passed.'
               });
             } catch (error) {
+              console.error('Merge error:', error);
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: `❌ **Merge Failed!** Failed to merge the PR: ${error.message}`
-              });            }
+                body: `❌ **Merge Failed!** Failed to merge the PR: ${error.message}\n\nThis might be due to:\n- Branch protection rules\n- Insufficient permissions\n- PR conflicts\n- Required status checks not met`
+              });
+            }
 
       # Fail the workflow explicitly if tests failed to prevent merge
       - name: Fail workflow if tests failed
