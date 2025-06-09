@@ -29,7 +29,7 @@ describe('App Component', () => {
   it('renders all section titles correctly', () => {
     render(<App />);
 
-    expect(screen.getByText('Step One')).toBeTruthy();
+    expect(screen.getByText('Step Oner')).toBeTruthy();
     expect(screen.getByText('See Your Changes')).toBeTruthy();
     expect(screen.getByText('Debug')).toBeTruthy();
     expect(screen.getByText('Learn More')).toBeTruthy();
